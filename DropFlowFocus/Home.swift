@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import CoreMotion
 
 struct HomeView: View {
     @EnvironmentObject var state: AppState
@@ -142,72 +143,102 @@ struct EnergyFlowView: View {
         )
     }
 }
-//
-//struct DropView: View {
-//    @State private var offset = CGSize.zero
-//    @State private var scale = 1.0
-//    @State private var opacity = 1.0
-//    @State private var burst = false
-//
-//    let color: Color
-//    let size: CGFloat
-//    let onTap: () -> Void
-//
-//    var body: some View {
-//        ZStack {
-//            if !burst {
-//                Circle()
-//                    .fill(color.opacity(0.6))
-//                    .frame(width: size, height: size)
-//                    .overlay(
-//                        Circle()
-//                            .stroke(color, lineWidth: 2)
-//                            .blur(radius: 4)
-//                    )
-//                    .shadow(color: color, radius: 8)
-//                    .scaleEffect(scale)
-//                    .opacity(opacity)
-//                    .offset(offset)
-//                    .onAppear {
-//                        withAnimation(.easeInOut(duration: 1.0)) {
-//                            offset.height = 300
-//                        }
-//                        withAnimation(.spring(response: 0.4, dampingFraction: 0.6).delay(1.0)) {
-//                            offset.height = 0
-//                            scale = 1.15
-//                        }
-//                        withAnimation(.easeOut.delay(1.4)) { scale = 1.0 }
-//                    }
-//            }
-//
-//            if burst {
-//                ForEach(0..<8) { i in
-//                    Circle()
-//                        .fill(color)
-//                        .frame(width: 6, height: 6)
-//                        .offset(
-//                            x: CGFloat.random(in: -30...30),
-//                            y: CGFloat.random(in: -30...30)
-//                        )
-//                        .opacity(0.8)
-//                        .scaleEffect(0.5)
-//                        .animation(.easeOut(duration: 0.6), value: burst)
-//                }
-//            }
-//        }
-//        .onTapGesture {
-//            SoundPlayer.shared.play("burst.wav")
-//            withAnimation(.easeOut(duration: 0.3)) {
-//                burst = true
-//                scale = 1.5
-//                opacity = 0
-//            }
-//            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-//                onTap()
-//                burst = false
-//                opacity = 1.0
-//                scale = 1.0
-//            }
-//        }
-//    }
-//}
+
+struct LiquidDropPhysicsView: View {
+    @State private var drops: [Drop] = []
+    
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                ForEach(drops) { drop in
+                    LiquidDrop(drop: drop)
+                        .onAppear {
+                            withAnimation(.linear(duration: drop.duration)) {
+                                if let idx = drops.firstIndex(where: { $0.id == drop.id }) {
+                                    drops[idx].position.y = proxy.size.height + 50
+                                }
+                            }
+                        }
+                }
+            }
+            .onAppear {
+                startRain(proxy: proxy)
+            }
+        }
+        .ignoresSafeArea()
+    }
+    
+    private func startRain(proxy: GeometryProxy) {
+        Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { t in
+            let drop = Drop(
+                id: UUID(),
+                position: CGPoint(x: .random(in: 50...UIScreen.main.bounds.height - 50), y: -50),
+                size: .random(in: 20...40),
+                color: [.neonPink, .neonPurple, .neonCyan].randomElement()!,
+                duration: .random(in: 2...4)
+            )
+            drops.append(drop)
+            
+            // Удаляем старые
+            drops.removeAll { $0.position.y > proxy.size.height + 100 }
+        }
+    }
+}
+
+struct Drop: Identifiable {
+    let id: UUID
+    var position: CGPoint
+    let size: CGFloat
+    let color: Color
+    let duration: TimeInterval
+}
+
+struct LiquidDrop: View {
+    let drop: Drop
+    
+    var body: some View {
+        Circle()
+            .fill(drop.color.opacity(0.6))
+            .frame(width: drop.size, height: drop.size)
+            .overlay(Circle().stroke(drop.color, lineWidth: 2).blur(radius: 4))
+            .shadow(color: drop.color, radius: 8)
+            .position(drop.position)
+    }
+}
+
+struct ParallaxBackground: View {
+    @StateObject private var motion = MotionManager()
+    
+    var body: some View {
+        ZStack {
+            // Layer 1: Deep background
+            AppBackground()
+                .offset(x: motion.roll * 30, y: motion.pitch * 30)
+            
+            // Layer 2: Wave
+            WaveBackground()
+                .offset(x: motion.roll * 15, y: motion.pitch * 15)
+                .opacity(0.7)
+            
+            // Layer 3: Drops
+            LiquidDropPhysicsView()
+                .offset(x: motion.roll * 8, y: motion.pitch * 8)
+        }
+        .ignoresSafeArea()
+    }
+}
+
+class MotionManager: ObservableObject {
+    @Published var roll: CGFloat = 0
+    @Published var pitch: CGFloat = 0
+    
+    private let motionManager = CMMotionManager()
+    
+    init() {
+        motionManager.startDeviceMotionUpdates(to: .main) { data, _ in
+            guard let attitude = data?.attitude else { return }
+            self.roll = CGFloat(attitude.roll)
+            self.pitch = CGFloat(attitude.pitch)
+        }
+    }
+}

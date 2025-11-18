@@ -5,7 +5,8 @@ struct ContentView: View {
     
     var body: some View {
         ZStack {
-            AppBackground()
+            // AppBackground()
+            ParallaxBackground()
             
             TabView {
                 HomeView()
@@ -21,17 +22,6 @@ struct ContentView: View {
                     .tabItem { Label("Profile", systemImage: "person") }
             }
             .accentColor(.neonCyan)
-            
-//            // Floating Add Button
-//            VStack {
-//                Spacer()
-//                HStack {
-//                    Spacer()
-//                    FloatingAddButton()
-//                    Spacer().frame(width: 24)
-//                }
-//            }
-//            .padding(.bottom, 90)
         }
     }
 }
@@ -39,35 +29,6 @@ struct ContentView: View {
 #Preview {
     ContentView()
 }
-
-struct FloatingAddButton: View {
-    @State private var showMenu = false
-    
-    var body: some View {
-        ZStack {
-            if showMenu {
-                // quick menu
-                VStack(spacing: 16) {
-                    Button { /* add task */ } label: { Image(systemName: "list.bullet") .foregroundColor(.white) }
-                    Button { /* add habit */ } label: { Image(systemName: "star") .foregroundColor(.white) }
-                    Button { /* add quote */ } label: { Image(systemName: "quote.bubble") .foregroundColor(.white) }
-                }
-                .offset(y: -120)
-                .transition(.scale.combined(with: .opacity))
-            }
-            
-            DropView(color: .neonPink, size: 64) {
-                withAnimation { showMenu.toggle() }
-            }
-            .overlay(
-                Image(systemName: "plus")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundColor(.white)
-            )
-        }
-    }
-}
-
 
 // MARK: - DropView (the glowing ball)
 struct DropView: View {

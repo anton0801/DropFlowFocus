@@ -4,6 +4,7 @@ import SwiftUI
 struct StatsView: View {
     @EnvironmentObject var state: AppState
     @StateObject private var vm: StatsVM = StatsVM()
+    @StateObject private var analVm = AnalyticsVM()
     
     var body: some View {
         ScrollView {
@@ -21,10 +22,15 @@ struct StatsView: View {
                         AchievementBadge(achievement: ach)
                     }
                 }
+                
+                InsightCard(title: "Best Time", value: analVm.bestTime)
+                InsightCard(title: "Focus Killers", value: analVm.killers)
+                InsightCard(title: "Productivity Score", value: "\(analVm.score)%")
             }
             .padding()
             .onAppear {
                 vm.setState(state)
+                analVm.analyze(state)
             }
         }
         .navigationTitle("Stats")

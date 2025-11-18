@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - Task
-struct Task: Identifiable, Codable, Equatable {
+struct TaskItem: Identifiable, Codable, Equatable {
     let id = UUID()
     var title: String
     var deadline: Date?
@@ -10,13 +10,34 @@ struct Task: Identifiable, Codable, Equatable {
     var category: Category = .work
     var subtasks: [Subtask] = []
     var isCompleted = false
+    
+    var recurrence: Recurrence? // новое поле
+    var isRecurring: Bool { recurrence != nil }
+    var dependsOn: [UUID]? // зависимости
 
     enum Category: String, CaseIterable, Codable {
         case work, personal, health, focus, learning
     }
     
-    static func ==(l: Task, r: Task) -> Bool {
+    static func ==(l: TaskItem, r: TaskItem) -> Bool {
         return l.id == r.id
+    }
+}
+
+struct Recurrence: Codable {
+    enum Frequency: String, Codable { case daily, weekly, monthly }
+    let frequency: Frequency
+    let interval: Int // каждые N дней/недель
+}
+
+extension String {
+    func toFrequency() -> Recurrence.Frequency? {
+        switch self {
+        case "daily": return .daily
+        case "weekly": return .weekly
+        case "monthly": return .monthly
+        default: return nil
+        }
     }
 }
 

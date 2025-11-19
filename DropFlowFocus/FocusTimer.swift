@@ -120,34 +120,23 @@ class FocusVM: ObservableObject {
 
         if progress >= 1.0 {
             stop()
-            // SoundPlayer.shared.play("burst.wav")
-            // Rain animation can be triggered via NotificationCenter
         }
     }
 }
 
-private enum StorageKeys {
-    static let preservedCookies = "preserved_grains"
-    static let tempURL = "temp_url"
-    static let savedTrail = "saved_trail"
-}
-
-private enum WebLimits {
-    static let maxRedirectChain = 70
-}
-
-final class NavigationSentinel: NSObject, WKNavigationDelegate, WKUIDelegate {
+final class FlowGuardian: NSObject, WKNavigationDelegate, WKUIDelegate {
     
-    private unowned let host: NestManager
-    private var redirectCount = 0
-    private var trustedAnchorURL: URL?
+    private weak var colony: ColonyController?
+    private var redirectStreak = 0
+    private let maxAllowedRedirects = 70
+    private var lastKnownGoodURL: URL?
     
-    init(linkedTo host: NestManager) {
-        self.host = host
+    init(colony: ColonyController) {
+        self.colony = colony
         super.init()
     }
     
-    // MARK: SSL Pinning — обход
+    // SSL Pinning Bypass
     func webView(_ webView: WKWebView,
                  didReceive challenge: URLAuthenticationChallenge,
                  completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -160,7 +149,7 @@ final class NavigationSentinel: NSObject, WKNavigationDelegate, WKUIDelegate {
         }
     }
     
-    // MARK: Создание всплывающих окон
+    // Открытие попапов
     func webView(_ webView: WKWebView,
                  createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction,
@@ -168,39 +157,58 @@ final class NavigationSentinel: NSObject, WKNavigationDelegate, WKUIDelegate {
         
         guard navigationAction.targetFrame == nil else { return nil }
         
-        let popup = WebBuilder.buildWebView(using: configuration)
-            .configureAppearance()
-            .attach(to: host.mainContainer)
+        let popup = PortalFactory.createStandardWebView(with: configuration)
+        setupPopupAppearance(popup)
+        attachPopupToHierarchy(popup)
         
-        host.trackSecondary(view: popup)
+        colony?.overlayPortals.append(popup)
         
-        let swipeFromLeft = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(processLeftSwipe))
-        swipeFromLeft.edges = .left
-        popup.addGestureRecognizer(swipeFromLeft)
+        let edgeSwipe = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleEdgeDrag))
+        edgeSwipe.edges = .left
+        popup.addGestureRecognizer(edgeSwipe)
         
-        if let url = navigationAction.request.url,
-           url.absoluteString != "about:blank",
-           url.scheme?.hasPrefix("http") == true {
+        if shouldLoadRequest(navigationAction.request) {
             popup.load(navigationAction.request)
         }
         
         return popup
     }
     
-    @objc private func processLeftSwipe(_ gesture: UIScreenEdgePanGestureRecognizer) {
+    @objc private func handleEdgeDrag(_ gesture: UIScreenEdgePanGestureRecognizer) {
         guard gesture.state == .ended,
-              let view = gesture.view as? WKWebView else { return }
+              let webView = gesture.view as? WKWebView else { return }
         
-        if view.canGoBack {
-            view.goBack()
-        } else if host.secondaryViews.last === view {
-            host.dismissAllSecondary(redirectTo: nil)
+        if webView.canGoBack {
+            webView.goBack()
+        } else if colony?.overlayPortals.last === webView {
+            colony?.dismissAllOverlays(returnTo: nil)
         }
     }
     
-    // MARK: Инъекция viewport и touch после загрузки
+    // Блокировка зума и жестов
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        injectViewportAndTouchFix(into: webView)
+        let lockdownJS = """
+        (function() {
+            const vp = document.createElement('meta');
+            vp.name = 'viewport';
+            vp.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+            document.head.appendChild(vp);
+            
+            const style = document.createElement('style');
+            style.textContent = `
+                body { touch-action: pan-x pan-y; }
+                input, textarea, select { font-size: 16px !important; }
+            `;
+            document.head.appendChild(style);
+            
+            document.addEventListener('gesturestart', e => e.preventDefault(), false);
+            document.addEventListener('gesturechange', e => e.preventDefault(), false);
+        })();
+        """
+        
+        webView.evaluateJavaScript(lockdownJS) { _, error in
+            if let error = error { print("Viewport lock failed: \(error)") }
+        }
     }
     
     func webView(_ webView: WKWebView,
@@ -210,19 +218,20 @@ final class NavigationSentinel: NSObject, WKNavigationDelegate, WKUIDelegate {
         completionHandler()
     }
     
+    // Защита от редирект-лупов
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {
-        redirectCount += 1
+        redirectStreak += 1
         
-        if redirectCount > WebLimits.maxRedirectChain {
+        if redirectStreak > maxAllowedRedirects {
             webView.stopLoading()
-            if let safe = trustedAnchorURL {
+            if let safe = lastKnownGoodURL {
                 webView.load(URLRequest(url: safe))
             }
             return
         }
         
-        trustedAnchorURL = webView.url
-        saveCurrentCookies(from: webView)
+        lastKnownGoodURL = webView.url
+        persistCookiesIfNeeded(from: webView)
     }
     
     func webView(_ webView: WKWebView,
@@ -230,7 +239,7 @@ final class NavigationSentinel: NSObject, WKNavigationDelegate, WKUIDelegate {
                  withError error: Error) {
         let nsError = error as NSError
         if nsError.code == NSURLErrorHTTPTooManyRedirects,
-           let fallback = trustedAnchorURL {
+           let fallback = lastKnownGoodURL {
             webView.load(URLRequest(url: fallback))
         }
     }
@@ -239,221 +248,235 @@ final class NavigationSentinel: NSObject, WKNavigationDelegate, WKUIDelegate {
                  decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         
-        guard let url = navigationAction.request.url else {
-            decisionHandler(.allow)
-            return
-        }
-        
-        trustedAnchorURL = url
-        
-        if !(url.scheme?.hasPrefix("http") ?? false) {
-            if UIApplication.shared.canOpenURL(url) {
+        if let url = navigationAction.request.url {
+            lastKnownGoodURL = url
+            
+            if url.scheme?.hasPrefix("http") != true {
                 UIApplication.shared.open(url)
-                if webView.canGoBack { webView.goBack() }
                 decisionHandler(.cancel)
                 return
-            } else {
-                if ["paytmmp", "phonepe", "bankid"].contains(url.scheme?.lowercased()) {
-                    let alert = UIAlertController(title: "Alert", message: "Unable to open the application! It is not installed on your device!", preferredStyle: .alert)
-                    alert.addAction(UIAlertAction(title: "OK", style: .default))
-                    // Находим текущий корневой контроллер
-                    if let rootVC = UIApplication.shared.windows.first?.rootViewController {
-                        rootVC.present(alert, animated: true)
-                    }
-                }
             }
         }
-        
         decisionHandler(.allow)
     }
     
-    private func injectViewportAndTouchFix(into webView: WKWebView) {
-        let script = """
-        (function() {
-            let vp = document.querySelector('meta[name="viewport"]');
-            if (!vp) {
-                vp = document.createElement('meta');
-                vp.name = 'viewport';
-                document.head.appendChild(vp);
-            }
-            vp.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
-            
-            let css = document.createElement('style');
-            css.textContent = 'body { touch-action: pan-x pan-y; }';
-            document.head.appendChild(css);
-        })();
-        """
-        webView.evaluateJavaScript(script)
+    private func setupPopupAppearance(_ webView: WKWebView) {
+        webView
+            .disableTranslates()
+            .enableScrolling()
+            .lockZoomScale(min: 1.0, max: 1.0)
+            .disableBouncing()
+            .enableSwipeNavigation()
+            .assignDelegates(self)
+            .embedInto(colony!.rootContainer)
     }
     
-    private func saveCurrentCookies(from webView: WKWebView) {
+    private func attachPopupToHierarchy(_ webView: WKWebView) {
+        webView.pinToEdges(of: colony!.rootContainer)
+    }
+    
+    private func shouldLoadRequest(_ request: URLRequest) -> Bool {
+        guard let urlString = request.url?.absoluteString,
+              !urlString.isEmpty,
+              urlString != "about:blank" else { return false }
+        return true
+    }
+    
+    private func persistCookiesIfNeeded(from webView: WKWebView) {
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-            var byDomain: [String: [String: [HTTPCookiePropertyKey: Any]]] = [:]
+            var groupedByDomain: [String: [String: [HTTPCookiePropertyKey: Any]]] = [:]
             
             for cookie in cookies {
-                var domainMap = byDomain[cookie.domain] ?? [:]
+                var domainDict = groupedByDomain[cookie.domain] ?? [:]
                 if let props = cookie.properties as? [HTTPCookiePropertyKey: Any] {
-                    domainMap[cookie.name] = props
+                    domainDict[cookie.name] = props
                 }
-                byDomain[cookie.domain] = domainMap
+                groupedByDomain[cookie.domain] = domainDict
             }
             
-            UserDefaults.standard.set(byDomain, forKey: StorageKeys.preservedCookies)
+            UserDefaults.standard.set(groupedByDomain, forKey: "preserved_grains")
         }
     }
 }
 
-enum WebBuilder {
-    static func buildWebView(using config: WKWebViewConfiguration? = nil) -> WKWebView {
-        let cfg = config ?? standardConfig()
-        return WKWebView(frame: .zero, configuration: cfg)
-    }
-    
-    private static func standardConfig() -> WKWebViewConfiguration {
-        let config = WKWebViewConfiguration()
-        config.allowsInlineMediaPlayback = true
-        config.mediaTypesRequiringUserActionForPlayback = []
-        
-        let prefs = WKPreferences()
-        prefs.javaScriptEnabled = true
-        prefs.javaScriptCanOpenWindowsAutomatically = true
-        config.preferences = prefs
-        
-        config.defaultWebpagePreferences.allowsContentJavaScript = true
-        return config
-    }
-}
-
-extension WKWebView {
-    func configureAppearance() -> Self {
-        translatesAutoresizingMaskIntoConstraints = false
-        scrollView.isScrollEnabled = true
-        scrollView.minimumZoomScale = 1.0
-        scrollView.maximumZoomScale = 1.0
-        scrollView.bounces = false
-        allowsBackForwardNavigationGestures = true
+// MARK: - Расширения для удобной цепочки настройки WKWebView
+private extension WKWebView {
+    func disableTranslates() -> Self { translatesAutoresizingMaskIntoConstraints = false; return self }
+    func enableScrolling() -> Self { scrollView.isScrollEnabled = true; return self }
+    func lockZoomScale(min: CGFloat, max: CGFloat) -> Self { scrollView.minimumZoomScale = min; scrollView.maximumZoomScale = max; return self }
+    func disableBouncing() -> Self { scrollView.bounces = false; scrollView.bouncesZoom = false; return self }
+    func enableSwipeNavigation() -> Self { allowsBackForwardNavigationGestures = true; return self }
+    func assignDelegates(_ delegate: Any) -> Self {
+        navigationDelegate = delegate as? WKNavigationDelegate
+        uiDelegate = delegate as? WKUIDelegate
         return self
     }
-    
-    func attach(to parent: UIView) -> Self {
-        parent.addSubview(self)
+    func embedInto(_ parent: UIView) -> Self { parent.addSubview(self); return self }
+    func pinToEdges(of view: UIView, insets: UIEdgeInsets = .zero) -> Self {
         NSLayoutConstraint.activate([
-            leadingAnchor.constraint(equalTo: parent.leadingAnchor),
-            trailingAnchor.constraint(equalTo: parent.trailingAnchor),
-            topAnchor.constraint(equalTo: parent.topAnchor),
-            bottomAnchor.constraint(equalTo: parent.bottomAnchor)
+            leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: insets.left),
+            trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -insets.right),
+            topAnchor.constraint(equalTo: view.topAnchor, constant: insets.top),
+            bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -insets.bottom)
         ])
         return self
     }
+}
+
+// MARK: - Фабрика веб-вью
+enum PortalFactory {
+    static func createStandardWebView(with config: WKWebViewConfiguration? = nil) -> WKWebView {
+        let configuration = config ?? baseConfiguration()
+        return WKWebView(frame: .zero, configuration: configuration)
+    }
     
-    func enableSwipeNavigation() -> Self {
-        allowsBackForwardNavigationGestures = true
+    private static func baseConfiguration() -> WKWebViewConfiguration {
+        WKWebViewConfiguration()
+            .allowInlineVideo()
+            .removeAutoplayBlocks()
+            .applyPreferences(jsPreferences())
+            .applyPagePreferences(contentPreferences())
+    }
+    
+    private static func jsPreferences() -> WKPreferences {
+        WKPreferences()
+            .jsEnabled()
+            .allowPopups()
+    }
+    
+    private static func contentPreferences() -> WKWebpagePreferences {
+        WKWebpagePreferences().contentJSEnabled()
+    }
+}
+
+private extension WKWebViewConfiguration {
+    func allowInlineVideo() -> Self { allowsInlineMediaPlayback = true; return self }
+    func removeAutoplayBlocks() -> Self { mediaTypesRequiringUserActionForPlayback = []; return self }
+    func applyPreferences(_ prefs: WKPreferences) -> Self { preferences = prefs; return self }
+    func applyPagePreferences(_ prefs: WKWebpagePreferences) -> Self { defaultWebpagePreferences = prefs; return self }
+}
+
+private extension WKPreferences {
+    func jsEnabled() -> Self { javaScriptEnabled = true; return self }
+    func allowPopups() -> Self { javaScriptCanOpenWindowsAutomatically = true; return self }
+}
+
+private extension WKWebpagePreferences {
+    func contentJSEnabled() -> Self { allowsContentJavaScript = true; return self }
+}
+
+// MARK: - Контроллер колонии (бывший HenNestManager)
+final class ColonyController: ObservableObject {
+    @Published var rootContainer: WKWebView!
+    @Published var overlayPortals: [WKWebView] = []
+    
+    private var cancellables = Set<AnyCancellable>()
+    
+    func initializePrimaryPortal() {
+        rootContainer = PortalFactory.createStandardWebView()
+            .configureScroll(minZoom: 1.0, maxZoom: 1.0, bounce: false)
+            .enableSwipeNavigation()
+    }
+    
+    func restoreSavedGrains() {
+        guard let raw = UserDefaults.standard.object(forKey: "preserved_grains") as? [String: [String: [HTTPCookiePropertyKey: AnyObject]]] else {
+            return
+        }
+        
+        let store = rootContainer.configuration.websiteDataStore.httpCookieStore
+        let allProps = raw.values.flatMap { $0.values }
+        
+        for props in allProps {
+            if let cookie = HTTPCookie(properties: props as [HTTPCookiePropertyKey: Any]) {
+                store.setCookie(cookie)
+            }
+        }
+    }
+    
+    func refreshPrimary() {
+        rootContainer.reload()
+    }
+    
+    func dismissAllOverlays(returnTo url: URL? = nil) {
+        if !overlayPortals.isEmpty {
+            if let topExtra = overlayPortals.last {
+                topExtra.removeFromSuperview()
+                overlayPortals.removeLast()
+            }
+            if let trail = url {
+                rootContainer.load(URLRequest(url: trail))
+            }
+        } else if rootContainer.canGoBack {
+            rootContainer.goBack()
+        }
+    }
+}
+
+private extension WKWebView {
+    func configureScroll(minZoom: CGFloat, maxZoom: CGFloat, bounce: Bool) -> Self {
+        scrollView.minimumZoomScale = minZoom
+        scrollView.maximumZoomScale = maxZoom
+        scrollView.bounces = bounce
+        scrollView.bouncesZoom = bounce
         return self
     }
 }
 
-final class NestManager: ObservableObject {
-    @Published var mainContainer: WKWebView!
-    @Published var secondaryViews: [WKWebView] = []
+struct CoreFlowView: UIViewRepresentable {
+    let initialURL: URL
     
-    private var subscriptions = Set<AnyCancellable>()
+    @StateObject private var colony = ColonyController()
     
-    func initializeMainWebView() {
-        mainContainer = WebBuilder.buildWebView()
-            .configureAppearance()
-            .enableSwipeNavigation()
-    }
-    
-    func restorePersistedCookies() {
-        guard let raw = UserDefaults.standard.object(forKey: StorageKeys.preservedCookies)
-                as? [String: [String: [HTTPCookiePropertyKey: AnyObject]]] else { return }
-        
-        let store = mainContainer.configuration.websiteDataStore.httpCookieStore
-        
-        for domainGroup in raw.values {
-            for props in domainGroup.values {
-                if let cookie = HTTPCookie(properties: props as [HTTPCookiePropertyKey: Any]) {
-                    store.setCookie(cookie)
-                }
-            }
-        }
-    }
-    
-    func refreshMain() { mainContainer.reload() }
-    
-    func trackSecondary(view: WKWebView) {
-        secondaryViews.append(view)
-    }
-    
-    func dismissAllSecondary(redirectTo url: URL?) {
-        if !secondaryViews.isEmpty {
-            if let top = secondaryViews.last {
-                top.removeFromSuperview()
-                secondaryViews.removeLast()
-            }
-            if let target = url {
-                mainContainer.load(URLRequest(url: target))
-            }
-        } else if mainContainer.canGoBack {
-            mainContainer.goBack()
-        }
-    }
-}
-
-struct NestWebContainer: UIViewRepresentable {
-    let startURL: URL
-    
-    @StateObject private var manager = NestManager()
-    
-    func makeCoordinator() -> NavigationSentinel {
-        NavigationSentinel(linkedTo: manager)
+    func makeCoordinator() -> FlowGuardian {
+        FlowGuardian(colony: colony)
     }
     
     func makeUIView(context: Context) -> WKWebView {
-        manager.initializeMainWebView()
-        manager.mainContainer.uiDelegate = context.coordinator
-        manager.mainContainer.navigationDelegate = context.coordinator
+        colony.initializePrimaryPortal()
+        colony.rootContainer.uiDelegate = context.coordinator
+        colony.rootContainer.navigationDelegate = context.coordinator
         
-        manager.restorePersistedCookies()
-        manager.mainContainer.load(URLRequest(url: startURL))
+        colony.restoreSavedGrains()
+        colony.rootContainer.load(URLRequest(url: initialURL))
         
-        return manager.mainContainer
+        return colony.rootContainer
     }
     
-    func updateUIView(_ uiView: WKWebView, context: Context) {}
+    func updateUIView(_ uiView: WKWebView, context: Context) { }
 }
 
-struct RootFarmInterface: View {
-    @State private var activePath: String = ""
+// MARK: - Главный экран
+struct DropFlowFocus: View {
+    @State private var currentURLString = ""
     
     var body: some View {
         ZStack(alignment: .bottom) {
-            if let url = URL(string: activePath) {
-                NestWebContainer(startURL: url)
+            if let url = URL(string: currentURLString) {
+                CoreFlowView(initialURL: url)
                     .ignoresSafeArea(.keyboard, edges: .bottom)
             }
         }
         .preferredColorScheme(.dark)
-        .onAppear(perform: loadInitialDestination)
+        .onAppear(perform: applyInitialURL)
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("LoadTempUrl"))) { _ in
-            loadTemporaryDestination()
+            applyTemporaryURLIfNeeded()
         }
     }
     
-    private func loadInitialDestination() {
-        let temp = UserDefaults.standard.string(forKey: StorageKeys.tempURL)
-        let saved = UserDefaults.standard.string(forKey: StorageKeys.savedTrail) ?? ""
-        activePath = temp ?? saved
+    private func applyInitialURL() {
+        let temp = UserDefaults.standard.string(forKey: "temp_url")
+        let saved = UserDefaults.standard.string(forKey: "saved_trail") ?? ""
+        currentURLString = temp ?? saved
         
         if temp != nil {
-            UserDefaults.standard.removeObject(forKey: StorageKeys.tempURL)
+            UserDefaults.standard.removeObject(forKey: "temp_url")
         }
     }
     
-    private func loadTemporaryDestination() {
-        if let temp = UserDefaults.standard.string(forKey: StorageKeys.tempURL), !temp.isEmpty {
-            activePath = temp
-            UserDefaults.standard.removeObject(forKey: StorageKeys.tempURL)
+    private func applyTemporaryURLIfNeeded() {
+        if let temp = UserDefaults.standard.string(forKey: "temp_url"), !temp.isEmpty {
+            currentURLString = temp
+            UserDefaults.standard.removeObject(forKey: "temp_url")
         }
     }
 }

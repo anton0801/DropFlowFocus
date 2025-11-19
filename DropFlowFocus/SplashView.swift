@@ -96,14 +96,15 @@ final class LaunchCoordinator: ObservableObject {
             return
         }
         
-        if needsPushPermissionPrompt() {
-            displayPushRequest = true
-        } else {
-            fetchServerConfig()
+        if destinationURL == nil {
+            if !UserDefaults.standard.bool(forKey: ConfigKeys.acceptedNotifications) && !UserDefaults.standard.bool(forKey: ConfigKeys.systemCloseNotifications) {
+                needsPushPermissionPrompt()
+            } else {
+                fetchServerConfig()
+            }
         }
     }
     
-    // MARK: Мониторинг сети
     private func beginConnectivityMonitoring() {
         connectivityWatcher.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
@@ -246,9 +247,13 @@ final class LaunchCoordinator: ObservableObject {
         transition(to: .fallbackUI)
     }
     
-    private func needsPushPermissionPrompt() -> Bool {
-        guard let last = UserDefaults.standard.object(forKey: ConfigKeys.lastNotificationAsk) as? Date else { return true }
-        return Date().timeIntervalSince(last) >= 259200 // 3 дня
+    private func needsPushPermissionPrompt() {
+        if let lastCheck = UserDefaults.standard.value(forKey: ConfigKeys.lastNotificationAsk) as? Date,
+           Date().timeIntervalSince(lastCheck) < 259200 {
+            fetchServerConfig()
+            return
+        }
+        displayPushRequest = true
     }
     
     func rejectPushRequest() {
@@ -342,7 +347,7 @@ struct SplashScreen: View {
             EmptyView()
         case .webHost:
             if coordinator.destinationURL != nil {
-                RootFarmInterface()
+                DropFlowFocus()
             } else {
                 ContentView()
                     .environmentObject(state)
@@ -365,15 +370,13 @@ struct OfflineScreen: View {
                 Image("splash_bg")
                     .resizable()
                     .scaledToFill()
-                    .frame(width: UIScreen.main.bounds.width, height: UIScreen.main.bounds.height)
+                    .frame(width: geo.size.width, height: geo.size.height)
                     .ignoresSafeArea()
                 
                 VStack {
                     Image("internet_connection")
                         .resizable()
                         .frame(width: 300, height: 280)
-                        .padding(.top, 42)
-                    Spacer()
                 }
             }
         }
@@ -381,7 +384,6 @@ struct OfflineScreen: View {
     }
 }
 
-// MARK: - Оверлей запроса уведомлений
 struct NotificationPermissionView: View {
     let onApprove: () -> Void
     let onReject: () -> Void
@@ -390,7 +392,7 @@ struct NotificationPermissionView: View {
         GeometryReader { geo in
             let isLandscape = geo.size.width > geo.size.height
             ZStack {
-                Image(isLandscape ? "alarm_notification_bg_land" : "alarm_notifications_bg_port")
+                Image(isLandscape ? "notifications_bg_land" : "notifications_bg")
                     .resizable()
                     .scaledToFill()
                     .frame(width: geo.size.width, height: geo.size.height)
@@ -399,17 +401,17 @@ struct NotificationPermissionView: View {
                 VStack(spacing: isLandscape ? 5 : 10) {
                     Spacer()
                     Text("Allow notifications about bonuses and promos".uppercased())
-                        .font(.custom("AlfaSlabOne-Regular", size: 18))
+                        .font(.custom("FjallaOne-Regular", size: 28))
                         .foregroundColor(.white)
                         .multilineTextAlignment(.center)
-                        .padding(.horizontal, 30)
-                        .shadow(color: Color(hex: "#456CE1"), radius: 1, x: -1, y: 0)
-                        .shadow(color: Color(hex: "#456CE1"), radius: 1, x: 1, y: 0)
-                        .shadow(color: Color(hex: "#456CE1"), radius: 1, x: 0, y: 1)
-                        .shadow(color: Color(hex: "#456CE1"), radius: 1, x: 0, y: -1)
+                        .padding(.horizontal, 8)
+                        .shadow(color: Color(hex: "#D000FF"), radius: 0.5, x: -1, y: 0)
+                        .shadow(color: Color(hex: "#D000FF"), radius: 0.5, x: 1, y: 0)
+                        .shadow(color: Color(hex: "#D000FF"), radius: 0.5, x: 0, y: 1)
+                        .shadow(color: Color(hex: "#D000FF"), radius: 0.5, x: 0, y: -1)
                     
                     Text("Stay tuned with best offers from our casino")
-                        .font(.custom("AlfaSlabOne-Regular", size: 15))
+                        .font(.custom("FjallaOne-Regular", size: 22))
                         .foregroundColor(.white)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 52)
@@ -424,7 +426,7 @@ struct NotificationPermissionView: View {
                     .padding(.top, 12)
                     
                     Button("SKIP", action: onReject)
-                        .font(.custom("AlfaSlabOne-Regular", size: 16))
+                        .font(.custom("FjallaOne-Regular", size: 16))
                         .foregroundColor(.white)
                     
                     Spacer().frame(height: isLandscape ? 30 : 30)
@@ -439,7 +441,6 @@ struct NotificationPermissionView: View {
 #Preview {
     LaunchScreenView()
 }
-
 
 struct LaunchScreenView: View {
     @State private var isAnimating = false
@@ -479,7 +480,6 @@ struct LaunchScreenView: View {
                         .opacity(showText ? 1 : 0)
                         .offset(y: showText ? 0 : 15)
                     
-                    ProgressView()
                 }
                 
                 Spacer()
@@ -487,6 +487,27 @@ struct LaunchScreenView: View {
                 Image("loading")
                     .resizable()
                     .frame(width: 250, height: 50)
+                
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(width: 150, height: 8)
+                    
+                    Capsule()
+                        .fill(LinearGradient(
+                            colors: [Color(hex: "#E25EFF"), Color(hex: "#D000FF")],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ))
+                        .frame(width: 30, height: 8)
+                        .offset(x: isAnimating ? 120 : 0)
+                }
+                .padding(.horizontal)
+                .onAppear {
+                    withAnimation(.linear(duration: 1.0).repeatForever(autoreverses: true)) {
+                        isAnimating = true
+                    }
+                }
                 
                 Spacer()
             }

@@ -162,7 +162,6 @@ final class DropFlowFocusDelegate: UIResponder, UIApplicationDelegate, AppsFlyer
     private func sendToSplashMergedDataAttrWithDeeps() {
         var merged = attrData
         
-        // Добавляем deep link только если он есть и ключей нет
         for (key, value) in deepLinkClickEvent {
             if merged[key] == nil {
                 merged[key] = value
@@ -174,6 +173,7 @@ final class DropFlowFocusDelegate: UIResponder, UIApplicationDelegate, AppsFlyer
                     object: nil,
                     userInfo: ["conversionData": merged]
                 )
+        print("merged data \(merged)")
         UserDefaults.standard.set(true, forKey: keySented)
         timerMerge?.invalidate()
     }

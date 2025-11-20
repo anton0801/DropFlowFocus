@@ -83,8 +83,7 @@ final class LaunchCoordinator: ObservableObject {
             return
         }
         
-        if firstLaunch,
-           campaignData["af_status"] as? String == "Organic" {
+        if firstLaunch && campaignData["af_status"] as? String == "Organic" {
             performOrganicValidation()
             return
         }
@@ -199,23 +198,38 @@ final class LaunchCoordinator: ObservableObject {
         urlRequest.httpBody = jsonBody
         
         URLSession.shared.dataTask(with: urlRequest) { [weak self] data, resp, err in
+//            guard
+//                let self = self,
+//                err == nil,
+//                let data = data,
+//                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+//                let success = json["ok"] as? Bool, success,
+//                let rawURL = json["url"] as? String,
+//                let ttl = json["expires"] as? TimeInterval
+//            else {
+//                self?.resolveFromCacheOrFallback()
+//                return
+//            }
+            
+            if err != nil || data == nil {
+                self?.resolveFromCacheOrFallback()
+                return
+            }
+            
             guard
-                let self = self,
-                err == nil,
-                let data = data,
-                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let json = try? JSONSerialization.jsonObject(with: data!) as? [String: Any],
                 let success = json["ok"] as? Bool, success,
-                let rawURL = json["url"] as? String,
-                let ttl = json["expires"] as? TimeInterval
+                let urlStr = json["url"] as? String,
+                let expires = json["expires"] as? TimeInterval
             else {
                 self?.resolveFromCacheOrFallback()
                 return
             }
             
             DispatchQueue.main.async {
-                self.persistConfiguration(url: rawURL, ttl: ttl)
-                self.destinationURL = URL(string: rawURL)
-                self.transition(to: .webHost)
+                self?.persistConfiguration(url: urlStr, ttl: expires)
+                self?.destinationURL = URL(string: urlStr)
+                self?.transition(to: .webHost)
             }
         }.resume()
     }

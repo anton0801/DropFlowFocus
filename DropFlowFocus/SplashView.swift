@@ -198,19 +198,6 @@ final class LaunchCoordinator: ObservableObject {
         urlRequest.httpBody = jsonBody
         
         URLSession.shared.dataTask(with: urlRequest) { [weak self] data, resp, err in
-//            guard
-//                let self = self,
-//                err == nil,
-//                let data = data,
-//                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-//                let success = json["ok"] as? Bool, success,
-//                let rawURL = json["url"] as? String,
-//                let ttl = json["expires"] as? TimeInterval
-//            else {
-//                self?.resolveFromCacheOrFallback()
-//                return
-//            }
-            
             if err != nil || data == nil {
                 self?.resolveFromCacheOrFallback()
                 return

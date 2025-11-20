@@ -13,13 +13,27 @@ struct ProfileView: View {
                     Picker("Theme", selection: $state.settings.theme) {
                         ForEach(Settings.Theme.allCases, id: \.self) { t in Text(t.rawValue.capitalized).tag(t) }
                     }
-//                    Slider(value: $state.settings.animationSpeed, in: 0.5...2.0, step: 0.1) {
-//                        Text("Animation Speed")
-//                    }
                 }
-                Section("Sync") {
-                    Button("Backup to iCloud") { /* implement */ }
-                    Button("Restore") { /* implement */ }
+
+                Section("Privacy & Contact") {
+                    Button {
+                        UIApplication.shared.open(URL(string: "https://dropfllowfocus.com/privacy-policy.html")!)
+                    } label: {
+                        HStack {
+                            Text("Privacy Policy")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                    }
+                    Button {
+                        UIApplication.shared.open(URL(string: "https://dropfllowfocus.com/support.html")!)
+                    } label: {
+                        HStack {
+                            Text("Contact us")
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                        }
+                    }
                 }
             }
             .navigationTitle("Profile")

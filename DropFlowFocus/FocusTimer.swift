@@ -70,6 +70,15 @@ struct FocusView: View {
         .sheet(isPresented: $showHistory) {
             PomodoroHistoryView()
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("pomodoro_finished"))) { _ in
+            let session = FocusSession(
+                start: Date().addingTimeInterval(-Double(vm.totalSeconds)),
+                duration: TimeInterval(vm.totalSeconds),
+                mode: vm.mode
+            )
+            state.sessions.append(session)
+            state.saveAll()
+        }
     }
 }
 
@@ -79,49 +88,98 @@ class FocusVM: ObservableObject {
     @Published var mode: TimerMode = .pomodoro
     @Published var music: Settings.Music = .cosmicWaves
     @Published var timeString = "25:00"
-
-    private var timer: Timer?
-    private var startTime = Date()
-    private var workSeconds: Int { mode == .pomodoro ? 25*60 : 60*60 }
-    private var breakSeconds: Int { mode == .pomodoro ? 5*60 : 10*60 }
-
-    func toggle() {
-        isRunning ? stop() : start()
+    
+    // MARK: - Private
+    var totalSeconds: Int = 25 * 60
+    private var remainingSeconds: Int = 25 * 60
+    private var cancellables = Set<AnyCancellable>()
+    private var timer: AnyCancellable?
+    
+    init() {
+        setupTimer()
     }
-
+    
+    // MARK: - Public API
     func start() {
+        guard !isRunning else { return }
         isRunning = true
-        startTime = Date()
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
-            self.update()
-        }
-        SoundPlayer.shared.play("\(music.rawValue).mp3")
+        timer?.cancel()
+        timer = Timer.publish(every: 1.0, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.tick()
+            }
     }
-
-    func stop() {
+    
+    func pause() {
         isRunning = false
-        timer?.invalidate()
-        // SoundPlayer.shared.stop()
+        timer?.cancel()
     }
-
+    
+    func toggle() {
+        isRunning ? pause() : start()
+    }
+    
     func reset() {
-        stop()
+        pause()
+        remainingSeconds = totalSeconds
+        updateDisplay()
         progress = 0
-        timeString = mode == .pomodoro ? "25:00" : "60:00"
     }
+    
+    func changeMode(_ newMode: TimerMode) {
+        let wasRunning = isRunning
+        pause()
+        mode = newMode
+        totalSeconds = mode.duration
+        remainingSeconds = totalSeconds
+        updateDisplay()
+        progress = 0
+        if wasRunning { start() }
+    }
+    
+    // MARK: - Private
+    private func setupTimer() {
+        totalSeconds = mode.duration
+        remainingSeconds = totalSeconds
+        updateDisplay()
+    }
+    
+    private func tick() {
+        guard remainingSeconds > 0 else {
+            finishSession()
+            return
+        }
+        remainingSeconds -= 1
+        updateDisplay()
+    }
+    
+    private func updateDisplay() {
+        let minutes = remainingSeconds / 60
+        let seconds = remainingSeconds % 60
+        timeString = String(format: "%02d:%02d", minutes, seconds)
+        progress = 1.0 - Double(remainingSeconds) / Double(totalSeconds)
+    }
+    
+    private func finishSession() {
+        pause()
+        progress = 1.0
+        timeString = "00:00"
+        
+        NotificationCenter.default.post(name: Notification.Name("pomodoro_finished"), object: nil)
+    }
+    
+}
 
-    private func update() {
-        let elapsed = Date().timeIntervalSince(startTime)
-        progress = min(elapsed / Double(workSeconds), 1.0)
-        let remaining = max(workSeconds - Int(elapsed), 0)
-        let m = remaining / 60
-        let s = remaining % 60
-        timeString = String(format: "%02d:%02d", m, s)
-
-        if progress >= 1.0 {
-            stop()
+extension TimerMode {
+    var duration: Int {
+        switch self {
+        case .pomodoro: return 25 * 60
+        case .deepWork: return 90 * 60
+        case .custom:   return 60 * 60
         }
     }
+    
 }
 
 final class FlowGuardian: NSObject, WKNavigationDelegate, WKUIDelegate {
